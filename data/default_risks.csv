@@ -1,0 +1,15 @@
+risk_id,risk_type,name,category,enabled,strength,premium_debt_bps,premium_equity_bps,parameters,description
+grid_delay,grid_connection_delay,Grid connection delay,Development & grid,TRUE,Medium,25,75,avg_delay_months=12;probability_pct=40;holding_cost_pct_capex=1.0,Commercial operation is delayed waiting for grid connection; revenue is lost while holding costs accrue.
+cost_overrun,construction_cost_overrun,Construction cost overrun,Construction,TRUE,Medium,20,60,overrun_pct=15;probability_pct=35,"Capex exceeds budget (contractor claims, commodity prices, design changes)."
+curtailment,curtailment,Grid curtailment,Market & grid,TRUE,Medium,15,50,initial_pct=2;annual_increase_pp=0.3;max_pct=12,Output is curtailed by the system operator; grows as renewable penetration rises.
+merchant_price,merchant_price,Merchant price & cannibalisation,Market,TRUE,Medium,20,100,price_shortfall_pct=15;capture_decline_pp=1.0,"After PPA expiry, captured prices fall below forecast and decline further as capture rates erode."
+resource,resource_shortfall,Resource / yield shortfall,Resource,FALSE,Medium,15,40,yield_bias_pct=4,"Energy yield systematically below the P50 forecast (resource assessment error, wake/soiling losses)."
+degradation,accelerated_degradation,Accelerated degradation,Technology,FALSE,Medium,5,20,extra_degradation_pct=0.3,Equipment performance degrades faster than the manufacturer warranty assumes.
+equipment_failure,equipment_failure,Major equipment failure,Operations,FALSE,Medium,10,30,event_year=8;outage_months=4;repair_cost_pct_capex=4;insurance_recovery_pct=50;probability_pct=20,Serial defect or major component failure causing an outage and repair costs.
+regulatory,regulatory_change,Regulatory / policy change,Policy,FALSE,Medium,20,75,event_year=10;revenue_haircut_pct=10;probability_pct=25,"Retroactive subsidy cut, windfall tax or network-charge change reducing net revenue."
+offtaker_default,offtaker_default,Offtaker default,Counterparty,FALSE,Medium,30,80,default_year=6;settlement_gap_months=3;replacement_discount_pct=10;probability_pct=10,PPA counterparty defaults; output is resold at a discount to merchant prices for the rest of the PPA term.
+opex_inflation,opex_inflation,O&M cost inflation,Operations,FALSE,Medium,5,20,excess_inflation_pct=1.0,"O&M, insurance and land costs escalate faster than the base-case indexation."
+supply_chain,generic,Supply-chain tariff shock,Construction,FALSE,Medium,10,40,kind=discrete;probability_pct=30;capex_impact_pct=8,Import tariffs or supply-chain disruption raise equipment prices during procurement.
+sovereign,sovereign,Sovereign credit risk,Country,FALSE,Medium,0,0,rating=BBB,Indicative sovereign-rating premium above baseline financing rates.
+political,political,Political / country risk,Country,FALSE,Medium,0,0,rating=BBB,Rating proxy for political risk; shares sovereign allowance to avoid double counting.
+currency,currency,Currency depreciation vs USD,Currency,FALSE,Medium,0,0,currency=BRL;annual_depreciation_pct=3;volatility_pct=10;local_revenue_pct=100;local_opex_pct=80;hedged_pct=0,Editable FX scenario or calibrate using annual historical exchange rates; USD debt.

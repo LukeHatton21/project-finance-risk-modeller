@@ -1,8 +1,14 @@
-# 🎈 Blank app template
+# Renewables Project Finance Risk Modeller
 
-A simple Streamlit app template for you to modify!
+Streamlit app for exploring how discrete (event) and systemic risks affect the cashflow, LCOE, NPV, IRR, DSCR
+and cost of capital of a renewable energy project.
 
-[![Open in Streamlit](https://static.streamlit.io/badges/streamlit_badge_black_white.svg)](https://blank-app-template.streamlit.app/)
+- `project_cashflow.py` – `ProjectInputs` and `ProjectCashflowModel` (annual project-finance model) plus `analyse()` for
+  baseline / risked / per-risk attribution runs.
+- `risk_objects.py` – `Risk` base class and risk categories. Add a category by subclassing `Risk`, declaring
+  `param_specs` and decorating with `@register_risk`.
+- `data/default_risks.csv` – default risk library (strength, premiums and `key=value;...` parameters). Rows with
+  `risk_type=generic` create new risks without code.
 
 ### How to run it on your own machine
 

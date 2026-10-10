@@ -1,10 +1,13 @@
 [project]
-name = "blank-app-template"
+name = "project-finance-risk-modeller"
 version = "0.1.0"
-description = "A simple Streamlit app template."
+description = "Streamlit app exploring the impact of project risks on renewable project finance cashflows."
 readme = "README.md"
 requires-python = ">=3.14"
 dependencies = [
+    "numpy>=2.4.4",
+    "pandas>=3.0.3",
+    "plotly>=7.1.0",
     "streamlit>=1.61.1",
 ]
 

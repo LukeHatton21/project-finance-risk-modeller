@@ -1,0 +1,11 @@
+rating,debt_bps,equity_bps,basis
+AAA,0,0,Illustrative editable rating benchmark - not live market data
+AA,40,60,Illustrative editable rating benchmark - not live market data
+A,70,105,Illustrative editable rating benchmark - not live market data
+BBB,150,225,Illustrative editable rating benchmark - not live market data
+BB,300,450,Illustrative editable rating benchmark - not live market data
+B,550,825,Illustrative editable rating benchmark - not live market data
+CCC,1000,1500,Illustrative editable rating benchmark - not live market data
+CC,1500,2250,Illustrative editable rating benchmark - not live market data
+C,2000,3000,Illustrative editable rating benchmark - not live market data
+D,2500,3750,Illustrative distressed scenario - not an investable market quote
