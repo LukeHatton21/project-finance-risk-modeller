@@ -1,0 +1,239 @@
+================================================================================
+COST-OF-CAPITAL PREMIUM CALCULATION: QUICK REFERENCE
+================================================================================
+
+QUESTION: How is the premium over the cost of capital for each risk calculated?
+
+ANSWER: The premium is a FIXED PARAMETER of each risk, applied as follows:
+
+1. Each Risk object has two parameters (in basis points):
+   • premium_debt_bps: Additional cost of debt
+   • premium_equity_bps: Additional cost of equity
+   
+   Example: CountryRisk with premium_debt_bps=150, premium_equity_bps=300
+
+2. When the risk is evaluated, premiums are multiplied by the STRENGTH multiplier:
+   
+   impact.premium_debt_bps = risk.premium_debt_bps × strength_multiplier
+   impact.premium_equity_bps = risk.premium_equity_bps × strength_multiplier
+   
+   "High" strength = 1.5x multiplier → premiums scale up
+   "Low" strength = 0.5x multiplier → premiums scale down
+
+3. Multiple risks are combined (premiums are ADDITIVE):
+   
+   combined_premium_debt = sum(risk1_premium + risk2_premium + ...)
+   combined_premium_equity = sum(risk1_premium + risk2_premium + ...)
+   (Exception: Country premium takes the maximum, not sum)
+
+4. Premiums are converted from basis points to decimal and added to cost rates:
+   
+   scale = 1e-4 (if include_premiums=True, else 0)
+   risk_debt_premium = combined_premium_debt × scale
+   risk_equity_premium = combined_premium_equity × scale
+   
+   Example: 300 bps × 0.0001 = 0.03 (3%)
+
+5. These premiums increase the cost of capital:
+   
+   cost_of_debt = risk_free + debt_margin + risk_debt_premium
+   cost_of_equity = risk_free + equity_premium + risk_equity_premium
+   
+   Example before risk: kd=5.75%, ke=8.50%
+   Example after risk:  kd=8.50%, ke=13.95% (+2.75% and +5.45%)
+
+6. Higher cost of capital increases the WACC (weighted average):
+   
+   WACC = gearing × kd × (1-tax_rate) + (1-gearing) × ke
+   
+   Before: WACC = 5.57%
+   After:  WACC = 8.65%  (premiums added 308 bps!)
+
+7. Higher WACC reduces NPV (more discounting of future cashflows):
+   
+   NPV = Σ [FCFF(t) / (1 + WACC)^t]
+   
+   At 5.57% WACC: NPV = $182.5M
+   At 8.65% WACC: NPV = $138.2M  (-$44.3M loss!)
+
+================================================================================
+
+QUESTION: Is this based on how the risked NPV changes?
+
+ANSWER: NO - it is INDEPENDENT of NPV change. The premium is:
+
+✗ NOT based on NPV impact
+✗ NOT calibrated to match a specific NPV reduction
+✗ NOT derived from "what WACC increase reproduces the cashflow NPV loss"
+
+It IS:
+✓ A fixed market-based input (like credit spreads)
+✓ Reflecting the market's view of the risk (insurance, ratings, etc.)
+✓ Applied uniformly via the discount rate mechanism
+
+HOWEVER: The model SEPARATES the two effects for analysis:
+
+a) Cashflow Impact: Risk reduces generation, revenue, or increases costs/capex
+b) Premium Impact: Risk increases the discount rate
+
+Both reduce NPV, but independently:
+
+   Total NPV Loss = Cashflow Effect + Premium Effect
+   
+   Example: -$44.3M total = -$12M (cashflow) + -$32.3M (premium)
+   
+This separation is done by running the model twice:
+   • Once with premiums: include_premiums=True (full impact)
+   • Once without premiums: include_premiums=False (cashflow only)
+
+The delta between these two runs is the pure premium impact.
+
+================================================================================
+
+QUESTION: What is needed to modify this to arrive at the baseline NPV?
+
+ANSWER: There are three paths to recover NPV:
+
+PATH 1: ELIMINATE THE PREMIUM (transfer risk to insurer)
+─────────────────────────────────────────────────────────
+Action: Set premium_debt_bps = 0 and premium_equity_bps = 0
+        (via intervention with premium_reduction_*_bps)
+
+Result: WACC drops from 8.65% → 5.57%
+        NPV recovers by $32.3M (premium component only)
+        Still down $12M (cashflow loss remains)
+
+CODE:
+  intervention = Intervention(
+      name="Political Risk Insurance",
+      affected_risks=["country_risk"],
+      premium_reduction_debt_bps=225,
+      premium_reduction_equity_bps=450,
+  )
+
+PATH 2: ELIMINATE CASHFLOW IMPACT (guarantee performance)
+──────────────────────────────────────────────────────────
+Action: Set generation_factor = 1.0, price_factor = 1.0, etc.
+        (via performance guarantee, insurance)
+
+Result: FCFF returns to baseline
+        NPV recovers by $12M (cashflow component only)
+        Still down $32.3M (premium impact remains)
+
+CODE:
+  # Set all risk factors to 1.0
+  generation_factor = 1.0  (no loss)
+  price_factor = 1.0
+  capex_factor = 1.0
+  opex_factor = 1.0
+  extra_cost = 0
+
+PATH 3: FULL MITIGATION (eliminate both)
+─────────────────────────────────────────
+Action: Combine paths 1 & 2 (insurance covers both premium and cashflow)
+
+Result: WACC = 5.57%, FCFF = baseline, NPV = $182.5M ✓ BASELINE ACHIEVED
+
+CODE:
+  # Perfect insurance eliminates everything
+  intervention = Intervention(
+      name="Comprehensive Risk Mitigation",
+      premium_reduction_debt_bps=225,
+      premium_reduction_equity_bps=450,
+      capex_reduction=0.10,  # Covers capex risk
+      generation_guarantee=0.95,  # Guarantees 95% generation
+      # ... etc
+  )
+
+================================================================================
+
+TECHNICAL DETAILS
+
+Risk Impact Combination (combine_impacts):
+───────────────────────────────────────────
+Factors: MULTIPLICATIVE
+  combined_gen = gen_risk1 × gen_risk2 × ...
+  combined_price = price_risk1 × price_risk2 × ...
+  
+Premiums: ADDITIVE (except country premium which takes MAX)
+  combined_debt_prem = debt_prem_risk1 + debt_prem_risk2 + ...
+  combined_equity_prem = equity_prem_risk1 + equity_prem_risk2 + ...
+  
+Extra costs: ADDITIVE
+  combined_extra_cost = extra_cost_risk1 + extra_cost_risk2 + ...
+
+Premium Filtering (include_premiums flag):
+──────────────────────────────────────────
+include_premiums=True (default):
+  scale = 1e-4
+  Premiums ARE applied to cost of capital
+  Result: WACC elevated by risk premiums
+
+include_premiums=False:
+  scale = 0.0
+  Premiums are ZEROED OUT
+  Result: WACC uses baseline rates only
+  
+Used to isolate pure cashflow impact.
+
+Attribution Metrics (analyse function):
+───────────────────────────────────────
+For each risk, calculates:
+  ΔLCOE_total = LCOE(with risk & premiums) - LCOE(baseline)
+  ΔLCOE_cashflow = LCOE(with risk, no premiums) - LCOE(baseline)
+  ΔLCOE_premium = ΔLCOE_total - ΔLCOE_cashflow
+  
+  ΔNPV_total = NPV(with risk & premiums) - NPV(baseline)
+  ΔNPV_cashflow = NPV(with risk, no premiums) - NPV(baseline)
+  ΔNPV_premium = ΔNPV_total - ΔNPV_cashflow
+
+================================================================================
+
+CODE LOCATIONS
+
+Risk Definition: risk_objects.py
+  • Lines 105-106: RiskImpact premium fields
+  • Lines 196-197: Risk constructor premium parameters
+  • Lines 241-242: Risk.evaluate() scales premiums by multiplier
+  • Lines 142-146: combine_impacts() adds premiums
+
+Premium Application: project_cashflow.py
+  • Lines 290-297: cost_of_capital() converts bps to decimal
+  • Lines 90-105: CostOfCapital properties compute rates
+  • Lines 123-131: WACC calculation
+  • Lines 480-550: analyse() function separates impacts
+
+Intervention: intervention_objects.py
+  • Premium reduction fields can modify premiums
+
+================================================================================
+
+WORKED EXAMPLE
+
+Setup:
+  Baseline: WACC=5.57%, NPV=$182.5M
+  Risk: premium_debt_bps=150, premium_equity_bps=300, strength="High"
+
+Step 1: Evaluate risk
+  Scaled premiums: 150×1.5=225 bps debt, 300×1.5=450 bps equity
+
+Step 2: Convert to decimal
+  225 × 0.0001 = 0.0275 (2.75%)
+  450 × 0.0001 = 0.0550 (5.50%)
+
+Step 3: Add to costs
+  kd = 5.75% + 2.75% = 8.50%
+  ke = 8.50% + 5.50% = 14.00%
+
+Step 4: Calculate WACC
+  WACC = 0.70×8.50%×0.75 + 0.30×14.00% = 8.63%
+
+Step 5: Calculate NPV
+  NPV (at 8.63%) = $138M (down $44.5M from baseline)
+
+Recovery Options:
+  • Eliminate premium only: Recover $32M (NPV → $170.5M)
+  • Eliminate cashflow only: Recover $12M (NPV → $150M)
+  • Full mitigation: Recover $44.5M (NPV → $182.5M) ✓
+
+================================================================================

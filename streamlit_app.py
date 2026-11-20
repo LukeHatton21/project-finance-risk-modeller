@@ -343,7 +343,6 @@ def risk_panel(library: list[RiskConfig], lifetime: int) -> tuple[list[Risk], st
         default_rating = next(cfg.build().params["rating"] for cfg in selected if cfg.risk_class.rating_driven)
         st.selectbox("Country sovereign foreign-currency rating", ratings, index=ratings.index(default_rating), key="country__rating",
                      help="Enter the current S&P/Fitch broad rating for your country; no automatic or live country-rating feed. Use the shared allowance for political and sovereign exposure.")
-        st.caption("Editable illustrative spreads, not current market quotes. Political and sovereign premiums overlap and are counted once.")
     risks: list[Risk] = []
     if not selected:
         st.info("No risks selected - showing the unrisked base case.", icon=":material/info:")
@@ -658,6 +657,12 @@ def kpi_cards(a: ScenarioAnalysis) -> None:
         ("WACC", fmt_pct(m["wacc"]), delta_str(m["wacc"], b["wacc"], "pct"), "inverse",
          "Post-tax nominal WACC including risk premiums."),
     ]
+    for col, (label, value, delta, color, help_) in zip(st.columns(len(cards)), cards):
+        col.metric(label, value, delta, delta_color=color, help=help_, border=True)
+
+
+def more_financial_metrics(a: ScenarioAnalysis) -> None:
+    m, b = a.risked.metrics, a.baseline.metrics
     more = [
         ("Project IRR", fmt_pct(m["project_irr"]), delta_str(m["project_irr"], b["project_irr"], "pct"), "normal", None),
         ("Average DSCR", f"{m['avg_dscr']:.2f}x" if _ok(m["avg_dscr"]) else "n/a", delta_str(m["avg_dscr"], b["avg_dscr"], "ratio"), "normal", None),
@@ -672,8 +677,6 @@ def kpi_cards(a: ScenarioAnalysis) -> None:
         ("Equity payback", f"{m['equity_payback_years']:.0f} yrs" if _ok(m["equity_payback_years"]) else "Not reached",
          delta_str(m["equity_payback_years"], b["equity_payback_years"], "years"), "inverse", "Operating years until cumulative equity cashflow turns positive."),
     ]
-    for col, (label, value, delta, color, help_) in zip(st.columns(len(cards)), cards):
-        col.metric(label, value, delta, delta_color=color, help=help_, border=True)
     with st.expander("More financial metrics", icon=":material/query_stats:"):
         for row in (more[:4], more[4:]):
             for col, (label, value, delta, color, help_) in zip(st.columns(4), row):
@@ -727,24 +730,6 @@ def coc_tab(a: ScenarioAnalysis) -> None:
     st.plotly_chart(coc_waterfall(a, "debt"), key="kd_wf")
     st.plotly_chart(coc_waterfall(a, "equity"), key="ke_wf")
 
-    l, r = st.columns(2)
-    with l:
-        st.plotly_chart(hurdle_waterfall(a), key="hurdle_wf")
-    with r:
-        st.markdown("**How should the risks be priced?**")
-        cfe = a.cashflow_equivalent_premium_bps
-        st.markdown(
-            f"- **Priced risk premiums** add **{(rc.wacc - bc.wacc) * 1e4:+.0f} bps** to the WACC. They compensate investors "
-            "for uncertainty that cannot be diversified away and are applied to the risked cashflows in this model.\n"
-            f"- **Expected-loss equivalent**: **{cfe:+.0f} bps**. This is the WACC uplift that, applied to the *unrisked* base-case "
-            "cashflows, gives the same NPV as the risk-adjusted cashflows. It is the minimum premium a financier "
-            "should demand if they model only the base case.\n"
-            f"- **Risk-adjusted hurdle** for a base-case model: **{fmt_pct(bc.wacc + (rc.wacc - bc.wacc) + (cfe / 1e4 if _ok(cfe) else 0))}**."
-            if _ok(cfe) else "Expected-loss equivalent premium could not be solved for this cashflow profile."
-        )
-        if a.risked.risks:
-            st.plotly_chart(premium_bar(a), key="prem_bar")
-
 
 def attribution_tab(a: ScenarioAnalysis) -> None:
     if a.attribution.empty:
@@ -752,30 +737,8 @@ def attribution_tab(a: ScenarioAnalysis) -> None:
         return
     label = st.segmented_control("Metric", list(ATTRIBUTION_OPTIONS), default="LCOE ($/MWh)", required=True)
     st.plotly_chart(attribution_waterfall(a, label), key="attr_wf")
-    st.caption(
-        "Each bar is the risk's standalone impact versus the no-risk case; 'Interaction effects' captures the "
-        "difference between the joint impact and the sum of standalone impacts."
-    )
     if a.interventions:
         st.caption("Intervention contributions are sequential marginal effects in instrument-selection order, including fees. This allocation is order-dependent, not a causal estimate or Shapley attribution.")
-    l, r = st.columns([3, 2])
-    l.plotly_chart(lcoe_split_figure(a), key="lcoe_split")
-    with r:
-        st.markdown("**Standalone impacts**")
-        st.dataframe(
-            a.attribution[["risk", "kind", "lcoe", "npv", "equity_irr", "min_dscr", "wacc"]],
-            hide_index=True,
-            column_config={
-                "risk": "Risk",
-                "kind": "Type",
-                "lcoe": st.column_config.NumberColumn("Δ LCOE ($/MWh)", format="%+.2f"),
-                "npv": st.column_config.NumberColumn("Δ NPV ($m)", format="%+.1f"),
-                "equity_irr": st.column_config.NumberColumn("Δ Equity IRR", format="percent"),
-                "min_dscr": st.column_config.NumberColumn("Δ Min DSCR", format="%+.2f"),
-                "wacc": st.column_config.NumberColumn("Δ WACC", format="percent"),
-            },
-        )
-
 
 TABLE_COLUMNS = {
     "year": "Year", "phase": "Phase", "generation_mwh": "Generation (MWh)", "price": "Price ($/MWh)",
@@ -823,35 +786,6 @@ def data_tab(a: ScenarioAnalysis, selected: list[RiskConfig]) -> None:
     c2.download_button("Download risk settings (CSV)", risk_configs_csv(selected, a.risked.risks), "risks.csv", "text/csv",
                        icon=":material/download:", width="stretch", disabled=not a.risked.risks,
                        help="Same format as data/default_risks.csv - save it there to make these settings the defaults.")
-
-
-def probability_tab(simulation: SimulationAnalysis, inputs: ProjectInputs) -> None:
-    metrics = simulation.metrics
-    first, second, third = st.columns(3)
-    first.metric("Probability NPV < 0", f"{100 * (metrics.npv < 0).mean():.1f}%")
-    dscr = metrics.min_dscr.dropna()
-    second.metric("Probability min DSCR < 1", f"{100 * (dscr < 1).mean():.1f}%" if len(dscr) else "n/a")
-    third.metric("Probability min DSCR < target", f"{100 * (dscr < inputs.target_dscr).mean():.1f}%" if len(dscr) else "n/a")
-    lower, median, upper = np.quantile(simulation.annual_fcff, [0.05, 0.5, 0.95], axis=0)
-    years = simulation.selected.risked.table.year
-    figure = go.Figure()
-    figure.add_trace(go.Scatter(x=years, y=upper, mode="lines", line=dict(width=0), showlegend=False, hoverinfo="skip"))
-    figure.add_trace(go.Scatter(x=years, y=lower, mode="lines", line=dict(width=0), fill="tonexty",
-                               fillcolor=LOSS_FILL, name="5th-95th percentile band"))
-    figure.add_trace(go.Scatter(x=years, y=median, mode="lines", name="Pointwise P50", line=dict(color=C["base"], dash="dash")))
-    figure.add_trace(go.Scatter(x=years, y=simulation.selected.risked.table.fcff, mode="lines",
-                               name=f"P{simulation.exceedance_pct:g} NPV-ranked path", line=dict(color=C["line"])))
-    figure.update_yaxes(title_text="Project free cashflow ($m)")
-    st.plotly_chart(_layout(figure, 380), key="probability_cashflow")
-    st.caption("Pointwise bands are annual quantiles, not one project path. Below, each metric has its own downside percentile: low NPV/IRR/DSCR/generation, high LCOE. NaN IRRs are excluded from IRR quantiles.")
-    st.dataframe(simulation.percentiles().rename(columns={"npv": "NPV ($m)", "equity_irr": "Equity IRR", "min_dscr": "Minimum DSCR", "lcoe": "LCOE ($/MWh)", "lifetime_generation_twh": "Generation (TWh)"}),
-                 column_config={"Equity IRR": st.column_config.NumberColumn(format="percent")})
-    histogram = go.Figure(go.Histogram(x=metrics.npv, nbinsx=35, marker_color=C["revenue"], name="NPV"))
-    histogram.add_vline(x=0, line=dict(color=C["loss"], dash="dash"))
-    histogram.update_xaxes(title_text="Project NPV ($m)")
-    histogram.update_yaxes(title_text="Simulation draws")
-    st.plotly_chart(_layout(histogram, 300, showlegend=False), key="npv_distribution")
-    st.download_button("Download simulated metrics", metrics.to_csv(index=False), "simulation_metrics.csv", "text/csv", icon=":material/download:")
 
 
 def intervention_tab(a: ScenarioAnalysis, simulation: SimulationAnalysis, inputs: ProjectInputs,
@@ -962,7 +896,7 @@ def main() -> None:
     with right:
         st.caption("Expected-input case" if case == "Expected" else f"{case} NPV-exceedance scenario · {draws:,} draws · seed {seed}. Other metrics belong to this same path, not their own percentile.")
         kpi_cards(analysis)
-        tabs = st.tabs(["Cashflow", "Debt & DSCR", "Cost of capital", "Risk attribution", "Data", "Probability", "De-risking & research"])
+        tabs = st.tabs(["Cashflow", "Debt & DSCR", "Cost of capital", "Risk attribution", "Data"])
         with tabs[0]:
             cashflow_tab(analysis)
         with tabs[1]:
@@ -973,10 +907,7 @@ def main() -> None:
             attribution_tab(analysis)
         with tabs[4]:
             data_tab(analysis, selected)
-        with tabs[5]:
-            probability_tab(simulation, inputs)
-        with tabs[6]:
-            intervention_tab(analysis, simulation, inputs, settings, intervention_settings, draws, int(seed), severity_cv, case)
+        more_financial_metrics(analysis)
         model_notes()
 
 

@@ -66,11 +66,33 @@ class ProjectInputs:
 
     @classmethod
     def from_preset(cls, technology: str, **overrides) -> ProjectInputs:
+        """Create ProjectInputs from a technology preset, optionally overriding specific parameters.
+        
+        Parameters
+        ----------
+        technology : str
+            Technology name (e.g., "Onshore wind", "Solar PV", "Offshore wind").
+        **overrides
+            Parameter overrides to apply to the technology preset.
+        
+        Returns
+        -------
+        ProjectInputs
+            A new ProjectInputs instance with preset values and applied overrides.
+        """
         return cls(technology=technology, **{**TECHNOLOGY_PRESETS[technology], **overrides})
 
     @property
     def capex_total(self) -> float:
-        """Unrisked capex, $m."""
+        """Calculate total unrisked capital expenditure in millions of dollars.
+        
+        Computes capex based on project capacity and per-kW cost.
+        
+        Returns
+        -------
+        float
+            Total capex in $m.
+        """
         return self.capacity_mw * 1000 * self.capex_per_kw / 1e6
 
 
@@ -88,15 +110,37 @@ class CostOfCapital:
 
     @property
     def cost_of_debt(self) -> float:
+        """Calculate nominal cost of debt as sum of risk-free rate, debt margin, and risk premium.
+        
+        Returns
+        -------
+        float
+            Cost of debt as a decimal fraction.
+        """
         return self.risk_free + self.debt_margin + self.risk_debt_premium
 
     @property
     def cost_of_equity(self) -> float:
+        """Calculate nominal cost of equity as sum of risk-free rate, equity premium, and risk premium.
+        
+        Returns
+        -------
+        float
+            Cost of equity as a decimal fraction.
+        """
         return self.risk_free + self.equity_premium + self.risk_equity_premium
 
     @property
     def wacc(self) -> float:
-        """Nominal post-tax WACC."""
+        """Calculate nominal post-tax weighted average cost of capital.
+        
+        Blends cost of debt (after tax) and cost of equity based on gearing ratio.
+        
+        Returns
+        -------
+        float
+            WACC as a decimal fraction.
+        """
         return self.gearing * self.cost_of_debt * (1 - self.tax_rate) + (1 - self.gearing) * self.cost_of_equity
 
 
@@ -114,12 +158,47 @@ class CashflowResult:
 
 
 def npv(rate: float, cashflows: np.ndarray) -> float:
-    """NPV with the first cashflow at t=0."""
+    """Calculate net present value of cashflows at a given discount rate.
+    
+    Assumes the first cashflow occurs at t=0 and subsequent cashflows are discounted.
+    
+    Parameters
+    ----------
+    rate : float
+        Discount rate as a decimal fraction.
+    cashflows : np.ndarray
+        Array of cashflows over time.
+    
+    Returns
+    -------
+    float
+        Net present value.
+    """
     return float(np.sum(cashflows / (1 + rate) ** np.arange(len(cashflows))))
 
 
 def irr(cashflows: np.ndarray, lo: float = -0.99, hi: float = 1.0, tol: float = 1e-7) -> float:
-    """IRR by bisection; NaN when the cashflow has no sign change in the search range."""
+    """Calculate internal rate of return using bisection method.
+    
+    Finds the discount rate where NPV equals zero. Returns NaN if no sign change exists
+    in the search range, indicating no IRR within that range.
+    
+    Parameters
+    ----------
+    cashflows : np.ndarray
+        Array of cashflows over time.
+    lo : float, optional
+        Lower bound of search range (default: -0.99).
+    hi : float, optional
+        Upper bound of search range (default: 1.0).
+    tol : float, optional
+        Convergence tolerance (default: 1e-7).
+    
+    Returns
+    -------
+    float
+        Internal rate of return as a decimal fraction, or NaN if no IRR found.
+    """
     f_lo, f_hi = npv(lo, cashflows), npv(hi, cashflows)
     if np.sign(f_lo) == np.sign(f_hi):
         return float("nan")
@@ -167,6 +246,16 @@ class ProjectCashflowModel:
         self.include_premiums = include_premiums
 
     def context(self) -> RiskContext:
+        """Build a RiskContext object for evaluating risks with project-specific parameters.
+        
+        Packages key project timing and financial parameters needed for risk evaluation,
+        such as construction/operation timeline, capex amount, and PPA terms.
+        
+        Returns
+        -------
+        RiskContext
+            Context object containing project parameters for risk evaluation.
+        """
         i = self.inputs
         return RiskContext(
             construction_years=i.construction_years,
@@ -181,6 +270,21 @@ class ProjectCashflowModel:
         )
 
     def cost_of_capital(self, impact: RiskImpact) -> CostOfCapital:
+        """Build cost-of-capital assumptions incorporating risk premiums.
+        
+        Scales risk premiums based on the include_premiums flag and converts basis points
+        to decimal fractions.
+        
+        Parameters
+        ----------
+        impact : RiskImpact
+            Risk impact object containing debt and equity premium adjustments (bps).
+        
+        Returns
+        -------
+        CostOfCapital
+            Cost of capital structure with risk-adjusted rates.
+        """
         i = self.inputs
         scale = 1e-4 if self.include_premiums else 0.0
         return CostOfCapital(
@@ -194,6 +298,23 @@ class ProjectCashflowModel:
         )
 
     def run(self) -> CashflowResult:
+        """Execute the full project finance cashflow model.
+        
+        Builds a detailed year-by-year cashflow table incorporating:
+        - Construction capex (risked and mitigated)
+        - Generation with performance degradation (risked by factors)
+        - Revenue under PPA and merchant pricing (risked by factors)
+        - Operating costs (risked by factors)
+        - Debt service with annuity repayment
+        - Tax and financial metrics (NPV, IRR, LCOE, DSCR, LLCR)
+        - Attribution of risks to individual impact drivers
+        
+        Returns
+        -------
+        CashflowResult
+            Comprehensive result containing detailed annual cashflow table, 
+            financial metrics, risk impacts, and cost of capital.
+        """
         i = self.inputs
         ctx = self.context()
         n, C = ctx.n_years, i.construction_years
@@ -370,9 +491,23 @@ class ScenarioAnalysis:
 
 
 def cashflow_equivalent_premium(baseline: CashflowResult, cashflow_only: CashflowResult) -> float:
-    """Discount-rate uplift (bps) on the unrisked cashflow that reproduces the risked-cashflow NPV.
-
-    This is the premium over the baseline WACC justified purely by expected cashflow losses.
+    """Calculate discount-rate uplift (bps) justified by expected cashflow losses alone.
+    
+    Finds the premium over the baseline WACC that, when applied to unrisked cashflows,
+    reproduces the NPV of cashflows impacted by risks. This isolates the pure cashflow
+    impact separate from explicit cost-of-capital premiums.
+    
+    Parameters
+    ----------
+    baseline : CashflowResult
+        Baseline (unrisked) cashflow result.
+    cashflow_only : CashflowResult
+        Cashflow result with risk impacts applied to flows but no cost-of-capital premiums.
+    
+    Returns
+    -------
+    float
+        Equivalent discount-rate premium in basis points (bps), or NaN if not found.
     """
     base_fcff = baseline.table["fcff"].to_numpy()
     target = npv(baseline.coc.wacc, cashflow_only.table["fcff"].to_numpy())
@@ -391,7 +526,31 @@ def cashflow_equivalent_premium(baseline: CashflowResult, cashflow_only: Cashflo
 
 def analyse(inputs: ProjectInputs, risks: Sequence[Risk], *, impact_overrides: dict[str, RiskImpact] | None = None,
             interventions: Sequence[Intervention] = ()) -> ScenarioAnalysis:
-    """Run baseline, joint-risk and per-risk standalone cases and attribute the impacts."""
+    """Run baseline, joint-risk, and per-risk standalone cases with optional interventions.
+    
+    Performs comprehensive scenario analysis including:
+    - Baseline (unrisked) case
+    - Unmitigated (risked, pre-intervention) case
+    - Risked with interventions applied
+    - Per-risk attribution to identify individual risk drivers
+    - Intervention impact attribution
+    
+    Parameters
+    ----------
+    inputs : ProjectInputs
+        Base-case project inputs.
+    risks : Sequence[Risk]
+        List of risks to evaluate.
+    impact_overrides : dict[str, RiskImpact], optional
+        Override risk impacts (bypasses risk evaluation).
+    interventions : Sequence[Intervention], optional
+        List of de-risking interventions to apply after risk evaluation.
+    
+    Returns
+    -------
+    ScenarioAnalysis
+        Attribution dataframe showing impact of each risk and intervention on key metrics.
+    """
     baseline = ProjectCashflowModel(inputs).run()
     unmitigated = ProjectCashflowModel(inputs, risks, impact_overrides=impact_overrides).run()
     raw = unmitigated.raw_risk_impacts
@@ -401,6 +560,18 @@ def analyse(inputs: ProjectInputs, risks: Sequence[Risk], *, impact_overrides: d
         risked.table[f"intervention_delta_{column}"] = risked.table[column] - unmitigated.table[column]
 
     def delta(result: CashflowResult) -> dict[str, float]:
+        """Calculate metric deltas (impact) relative to baseline for attribution metrics.
+        
+        Parameters
+        ----------
+        result : CashflowResult
+            Cashflow result to compare against baseline.
+        
+        Returns
+        -------
+        dict[str, float]
+            Dictionary mapping metric names to their changes vs baseline.
+        """
         return {k: result.metrics[k] - baseline.metrics[k] for k in ATTRIBUTION_METRICS}
 
     rows = []
@@ -469,6 +640,16 @@ class SimulationAnalysis:
     unmitigated_metrics: pd.DataFrame = field(default_factory=pd.DataFrame)
 
     def percentiles(self) -> pd.DataFrame:
+        """Calculate percentile values for key financial metrics.
+        
+        Computes P50, P75, P90, P95, P99 for NPV, equity IRR, minimum DSCR, LCOE,
+        and lifetime generation from the simulation results.
+        
+        Returns
+        -------
+        pd.DataFrame
+            Percentile values indexed by percentile label (P50, P75, etc.).
+        """
         levels = [50, 75, 90, 95, 99]
         columns = ["npv", "equity_irr", "min_dscr", "lcoe", "lifetime_generation_twh"]
         return pd.DataFrame(
@@ -480,7 +661,42 @@ class SimulationAnalysis:
 def simulate(inputs: ProjectInputs, risks: Sequence[Risk], *, draws: int = 500,
              exceedance_pct: float = 90, seed: int = 42, severity_cv: float = 0.25,
              interventions: Sequence[Intervention] = ()) -> SimulationAnalysis:
-    """Independent event draws and lognormal severities; select a coherent path by NPV exceedance rank."""
+    """Run Monte Carlo simulation with independent risk events and stochastic severities.
+    
+    For each draw:
+    - Independently samples each risk's occurrence and severity
+    - Builds lognormal severity distribution with specified coefficient of variation
+    - Optionally applies interventions to each path
+    - Selects a coherent path (all risks jointly) ranked by NPV exceedance percentile
+    
+    Parameters
+    ----------
+    inputs : ProjectInputs
+        Base-case project inputs.
+    risks : Sequence[Risk]
+        List of risks to sample.
+    draws : int, optional
+        Number of Monte Carlo draws (default: 500).
+    exceedance_pct : float, optional
+        Percentile rank for path selection (0-100; default: 90).
+        0 = best case, 100 = worst case.
+    seed : int, optional
+        Random seed for reproducibility (default: 42).
+    severity_cv : float, optional
+        Coefficient of variation for lognormal severity (default: 0.25).
+    interventions : Sequence[Intervention], optional
+        De-risking interventions to apply to each draw.
+    
+    Returns
+    -------
+    SimulationAnalysis
+        Metrics for all draws, selected representative path, and unmitigated baseline metrics.
+    
+    Raises
+    ------
+    ValueError
+        If draws < 2, exceedance_pct not in (0, 100), or severity_cv < 0.
+    """
     if draws < 2 or not 0 < exceedance_pct < 100 or severity_cv < 0:
         raise ValueError("Need >=2 draws, 0<P<100 and nonnegative severity uncertainty")
     generator = np.random.default_rng(seed)
