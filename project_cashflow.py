@@ -490,12 +490,68 @@ class ScenarioAnalysis:
     intervention_attribution: pd.DataFrame = field(default_factory=pd.DataFrame)
 
 
+def calculate_equivalent_premium(baseline_fcff: np.ndarray, risked_fcff: np.ndarray, 
+                                 baseline_wacc: float) -> float:
+    """Calculate the discount-rate premium (bps) equivalent to cashflow degradation.
+    
+    Finds the premium over baseline WACC that, when applied to baseline cashflows,
+    reproduces the NPV of degraded cashflows at baseline WACC.
+    
+    This converts cashflow-based risk impacts into their equivalent cost-of-capital
+    representation, avoiding double-counting by using only ONE mechanism per risk.
+    
+    Parameters
+    ----------
+    baseline_fcff : np.ndarray
+        Undegraded (baseline) free cash flow per year.
+    risked_fcff : np.ndarray
+        Degraded (risked) free cash flow per year.
+    baseline_wacc : float
+        Baseline WACC (decimal, e.g., 0.06 for 6%).
+    
+    Returns
+    -------
+    float
+        Equivalent premium in basis points (bps), or 0.0 if no premium is needed.
+    
+    Notes
+    -----
+    If the target NPV cannot be bracketed, returns 0.0 (no meaningful premium).
+    """
+    target_npv = npv(baseline_wacc, risked_fcff)
+    
+    # Search bounds: from baseline to baseline + 500 bps
+    lo, hi = baseline_wacc, baseline_wacc + 0.50
+    f = lambda r: npv(r, baseline_fcff) - target_npv  # noqa: E731
+    
+    # Check if solution exists within bounds
+    if np.sign(f(lo)) == np.sign(f(hi)):
+        return 0.0
+    
+    # Binary search for the equivalent rate
+    for _ in range(100):
+        mid = (lo + hi) / 2
+        if np.sign(f(mid)) == np.sign(f(lo)):
+            lo = mid
+        else:
+            hi = mid
+    
+    equivalent_rate = (lo + hi) / 2
+    return (equivalent_rate - baseline_wacc) * 1e4  # Convert to bps
+
+
 def cashflow_equivalent_premium(baseline: CashflowResult, cashflow_only: CashflowResult) -> float:
     """Calculate discount-rate uplift (bps) justified by expected cashflow losses alone.
     
     Finds the premium over the baseline WACC that, when applied to unrisked cashflows,
     reproduces the NPV of cashflows impacted by risks. This isolates the pure cashflow
     impact separate from explicit cost-of-capital premiums.
+    
+    **Used for Attribution Analysis Only:**
+    
+    This reports what the equivalent premium WOULD have been if risks had no
+    explicit market premiums. Useful for understanding whether market premiums
+    match the economic impact of cashflow degradation.
     
     Parameters
     ----------
@@ -510,18 +566,54 @@ def cashflow_equivalent_premium(baseline: CashflowResult, cashflow_only: Cashflo
         Equivalent discount-rate premium in basis points (bps), or NaN if not found.
     """
     base_fcff = baseline.table["fcff"].to_numpy()
-    target = npv(baseline.coc.wacc, cashflow_only.table["fcff"].to_numpy())
-    lo, hi = baseline.coc.wacc - 0.10, baseline.coc.wacc + 0.50
-    f = lambda r: npv(r, base_fcff) - target  # noqa: E731
-    if np.sign(f(lo)) == np.sign(f(hi)):
-        return float("nan")
-    for _ in range(100):
-        mid = (lo + hi) / 2
-        if np.sign(f(mid)) == np.sign(f(lo)):
-            lo = mid
-        else:
-            hi = mid
-    return ((lo + hi) / 2 - baseline.coc.wacc) * 1e4
+    cashflow_only_fcff = cashflow_only.table["fcff"].to_numpy()
+    premium_bps = calculate_equivalent_premium(base_fcff, cashflow_only_fcff, baseline.coc.wacc)
+    return premium_bps if premium_bps > 0 else float("nan")
+
+
+def _apply_auto_premiums(inputs: ProjectInputs, risks: Sequence[Risk], impacts: dict[str, RiskImpact], 
+                         baseline: CashflowResult) -> None:
+    """Auto-calculate and apply equivalent premiums for risks with cashflow impacts but no explicit premiums.
+    
+    For risks that affect cashflows (e.g., generation_factor, price_factor, opex_factor, capex_factor)
+    but don't have explicit market premiums, calculate the equivalent cost-of-capital premium that
+    would produce the same NPV impact when applied to baseline cashflows at baseline WACC.
+    
+    This modifies the impacts dict in-place, adding premium_debt_bps and premium_equity_bps to risks
+    that need them.
+    
+    Parameters
+    ----------
+    inputs : ProjectInputs
+        Base-case project inputs.
+    risks : Sequence[Risk]
+        List of risks being evaluated.
+    impacts : dict[str, RiskImpact]
+        Dictionary of risk impacts (modified in-place).
+    baseline : CashflowResult
+        Baseline (unrisked) cashflow result for premium calculation reference.
+    """
+    for risk, impact in impacts.items():
+        # Only auto-calculate if the risk doesn't already have explicit premiums
+        if impact.premium_debt_bps == 0.0 and impact.premium_equity_bps == 0.0:
+            # Run the risk in isolation with cashflows but no premiums to calculate equivalent premium
+            risk_obj = next(r for r in risks if r.risk_id == risk)
+            isolated_cashflow_only = ProjectCashflowModel(
+                inputs, [risk_obj], 
+                impact_overrides={risk: impact}, 
+                include_premiums=False
+            ).run()
+            
+            # Calculate equivalent premium from cashflow degradation
+            baseline_fcff = baseline.table["fcff"].to_numpy()
+            risked_fcff = isolated_cashflow_only.table["fcff"].to_numpy()
+            equiv_prem_bps = calculate_equivalent_premium(baseline_fcff, risked_fcff, baseline.coc.wacc)
+            
+            # Apply the equivalent premium symmetrically to both debt and equity
+            # (unless the premium is negligible)
+            if equiv_prem_bps > 0.1:  # Only apply if meaningful (>1 basis point)
+                impact.premium_debt_bps = equiv_prem_bps
+                impact.premium_equity_bps = equiv_prem_bps
 
 
 def analyse(inputs: ProjectInputs, risks: Sequence[Risk], *, impact_overrides: dict[str, RiskImpact] | None = None,
@@ -534,6 +626,31 @@ def analyse(inputs: ProjectInputs, risks: Sequence[Risk], *, impact_overrides: d
     - Risked with interventions applied
     - Per-risk attribution to identify individual risk drivers
     - Intervention impact attribution
+    - Auto-calculation of cost-of-capital premiums from cashflow degradation
+    
+    **Premium Auto-Calculation:**
+    
+    For risks that affect cashflows (e.g., generation_factor, price_factor, opex_factor,
+    capex_factor) but don't have explicit market premiums, the equivalent cost-of-capital
+    premium is automatically calculated and applied to both cost of debt and cost of equity.
+    This ensures that:
+    
+    - Currency depreciation risk (reducing revenue in local currency) increases LCOE and WACC
+    - Performance degradation risks increase the cost of capital proportionally
+    - Financial impact is reflected consistently across both cashflows AND discount rates
+    
+    The equivalent premium is calculated by finding the discount-rate increase that would,
+    when applied to baseline (unrisked) cashflows, produce the same NPV as the risked cashflows
+    discounted at the baseline WACC. This avoids double-counting by using ONE mechanism:
+    either explicit market premiums (for risks with known capital market pricing) OR 
+    auto-calculated premiums (for risks modeled through cashflow degradation).
+    
+    **Intervention Premium Relief:**
+    
+    When interventions are applied to risks with auto-calculated premiums, the premium 
+    reduction is handled through the auto-recalculation mechanism: interventions first 
+    reduce the cashflow degradation, which then naturally reduces the equivalent premium
+    when recalculated on the mitigated cashflows.
     
     Parameters
     ----------
@@ -549,11 +666,18 @@ def analyse(inputs: ProjectInputs, risks: Sequence[Risk], *, impact_overrides: d
     Returns
     -------
     ScenarioAnalysis
-        Attribution dataframe showing impact of each risk and intervention on key metrics.
+        Attribution dataframe showing impact of each risk and intervention on key metrics,
+        including both cashflow impacts and their equivalent cost-of-capital premiums.
     """
     baseline = ProjectCashflowModel(inputs).run()
-    unmitigated = ProjectCashflowModel(inputs, risks, impact_overrides=impact_overrides).run()
-    raw = unmitigated.raw_risk_impacts
+    # Get raw impacts and calculate auto-premiums BEFORE creating unmitigated model
+    temp_unmitigated = ProjectCashflowModel(inputs, risks, impact_overrides=impact_overrides).run()
+    raw = temp_unmitigated.raw_risk_impacts
+    _apply_auto_premiums(inputs, risks, raw, baseline)
+    
+    # Now recreate unmitigated model with auto-premiums applied to raw impacts
+    unmitigated = ProjectCashflowModel(inputs, risks, impact_overrides=raw).run()
+    
     risked = ProjectCashflowModel(inputs, risks, impact_overrides=raw, interventions=interventions).run()
     cashflow_only = ProjectCashflowModel(inputs, risks, impact_overrides=raw, interventions=interventions, include_premiums=False).run()
     for column in ("fcff", "equity_cf", "cfads", "revenue", "capex", "opex", "debt_service"):

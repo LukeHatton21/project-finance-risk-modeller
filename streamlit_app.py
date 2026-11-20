@@ -737,6 +737,12 @@ def attribution_tab(a: ScenarioAnalysis) -> None:
         return
     label = st.segmented_control("Metric", list(ATTRIBUTION_OPTIONS), default="LCOE ($/MWh)", required=True)
     st.plotly_chart(attribution_waterfall(a, label), key="attr_wf")
+    
+    # Show LCOE split by cashflow vs cost-of-capital impact
+    st.subheader("LCOE impact breakdown")
+    st.plotly_chart(lcoe_split_figure(a), key="lcoe_split")
+    st.caption("Shows each risk's impact split into cashflow (operational) and cost-of-capital (financing) components.")
+    
     if a.interventions:
         st.caption("Intervention contributions are sequential marginal effects in instrument-selection order, including fees. This allocation is order-dependent, not a causal estimate or Shapley attribution.")
 
@@ -755,9 +761,12 @@ def risk_configs_csv(selected: list[RiskConfig], risks: list[Risk]) -> str:
     configs = {cfg.risk_id: cfg for cfg in selected}
     for r in risks:
         cfg = configs[r.risk_id]
+        # Use market_premium_* (new) with fallback to premium_* (old, for backward compat)
+        debt_premium = r.market_premium_debt_bps if r.market_premium_debt_bps is not None else 0.0
+        equity_premium = r.market_premium_equity_bps if r.market_premium_equity_bps is not None else 0.0
         rows.append({
             "risk_id": r.risk_id, "risk_type": cfg.risk_type, "name": r.name, "category": r.category, "enabled": True,
-            "strength": r.strength, "premium_debt_bps": r.premium_debt_bps, "premium_equity_bps": r.premium_equity_bps,
+            "strength": r.strength, "premium_debt_bps": debt_premium, "premium_equity_bps": equity_premium,
             "parameters": ";".join(f"{k}={v}" for k, v in r.params.items()), "description": r.description,
         })
     buf = io.StringIO()

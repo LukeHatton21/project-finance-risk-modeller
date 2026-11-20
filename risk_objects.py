@@ -195,16 +195,73 @@ class Risk(ABC):
         params: dict[str, Any] | None = None,
         premium_debt_bps: float = 0.0,
         premium_equity_bps: float = 0.0,
+        market_premium_debt_bps: float | None = None,
+        market_premium_equity_bps: float | None = None,
         category: str | None = None,
         description: str | None = None,
     ) -> None:
+        """Initialize a Risk.
+        
+        Parameters
+        ----------
+        risk_id : str
+            Unique identifier for the risk.
+        name : str, optional
+            Display name (defaults to class label).
+        strength : str | float, default "Medium"
+            Multiplier for impact magnitude. Can be preset strings
+            ("Very low", "Low", "Medium", "High", "Very high") or numeric.
+        params : dict[str, Any], optional
+            Risk-specific parameters.
+        premium_debt_bps : float, default 0.0
+            **DEPRECATED: Use market_premium_debt_bps instead.**
+            Explicit debt cost premium in basis points.
+        premium_equity_bps : float, default 0.0
+            **DEPRECATED: Use market_premium_equity_bps instead.**
+            Explicit equity cost premium in basis points.
+        market_premium_debt_bps : float, optional
+            **[NEW]** Market-based debt cost premium override (bps).
+            If provided, this REPLACES the auto-calculated equivalent premium
+            from cashflow degradation. Use this when you have internal market data
+            that differs from the auto-calculated value.
+        market_premium_equity_bps : float, optional
+            **[NEW]** Market-based equity cost premium override (bps).
+            If provided, this REPLACES the auto-calculated equivalent premium
+            from cashflow degradation.
+        category : str, optional
+            Risk category for grouping.
+        description : str, optional
+            Human-readable description.
+        
+        Notes
+        -----
+        PREMIUM CALCULATION (No Double-Counting):
+        
+        1. If market_premium_* is provided:
+           Use it as-is (assumes user has internal market data)
+        
+        2. If market_premium_* is NOT provided:
+           Calculate equivalent premium from cashflow degradation
+           (generation_factor, price_factor, opex_factor, capex_factor)
+        
+        3. The old premium_debt_bps/premium_equity_bps parameters are deprecated
+           but still accepted for backward compatibility. They are treated as
+           legacy market premiums and override auto-calculation.
+        """
         self.risk_id = risk_id
         self.name = name or self.label
         self.category = category or self.default_category
         self.description = description or self.default_description
         self.strength = strength
-        self.premium_debt_bps = float(premium_debt_bps)
-        self.premium_equity_bps = float(premium_equity_bps)
+        
+        # Handle premium inputs: market overrides take priority over deprecated params
+        self.market_premium_debt_bps = market_premium_debt_bps if market_premium_debt_bps is not None else (
+            float(premium_debt_bps) if premium_debt_bps > 0 else None
+        )
+        self.market_premium_equity_bps = market_premium_equity_bps if market_premium_equity_bps is not None else (
+            float(premium_equity_bps) if premium_equity_bps > 0 else None
+        )
+        
         specs = self.spec_map()
         self.params: dict[str, Any] = {s.key: s.default for s in self.param_specs}
         for key, value in (params or {}).items():
@@ -233,13 +290,38 @@ class Risk(ABC):
         return float(ctx.rng.random() < probability) if ctx.rng is not None else probability
 
     def evaluate(self, ctx: RiskContext) -> RiskImpact:
+        """Evaluate the risk and generate a RiskImpact.
+        
+        The premium (debt & equity) is determined by one of two paths:
+        
+        1. If market_premium_* is provided by the user:
+           Use it as-is (assumes user has better market data than model)
+        
+        2. Otherwise:
+           Premium is NOT set here; it will be calculated later in
+           project_cashflow.py via cashflow_equivalent_premium().
+           This avoids double-counting by using ONE mechanism: either
+           cashflow degradation OR explicit premium, never both.
+        
+        Returns
+        -------
+        RiskImpact
+            Impact with cashflow factors set, premiums left for later
+            calculation if no market override is provided.
+        """
         m = self.multiplier
         if ctx.rng is not None:
             sigma = np.sqrt(np.log1p(ctx.severity_cv ** 2))
             m *= ctx.rng.lognormal(-sigma ** 2 / 2, sigma)
         impact = self._impact(ctx, m, self.probability(ctx))
-        impact.premium_debt_bps = self.premium_debt_bps * self.multiplier
-        impact.premium_equity_bps = self.premium_equity_bps * self.multiplier
+        
+        # Apply market premium override if provided (scaled by multiplier)
+        # Otherwise, leave premiums at 0.0; they'll be auto-calculated from cashflow
+        if self.market_premium_debt_bps is not None:
+            impact.premium_debt_bps = self.market_premium_debt_bps * self.multiplier
+        if self.market_premium_equity_bps is not None:
+            impact.premium_equity_bps = self.market_premium_equity_bps * self.multiplier
+        
         return impact
 
     @abstractmethod
@@ -304,18 +386,19 @@ class PoliticalRisk(SovereignRisk):
 
 
 @register_risk
+@register_risk
 class CurrencyRisk(Risk):
     risk_type = "currency"
     label = "Currency depreciation vs USD"
     default_category = "Currency"
-    default_description = "Local revenue and O&M translated to USD; debt service remains USD-denominated."
+    default_description = "Local revenue exposed to currency depreciation while O&M and debt service remain hard-currency denominated. Depreciation reduces USD-equivalent revenue without reducing hard-currency costs, increasing currency mismatch risk."
     param_specs = (
         ParamSpec("currency", "Local currency", "BRL", options=("USD", "EUR", "GBP", "BRL", "INR", "ZAR", "MXN", "TRY", "IDR", "JPY")),
         ParamSpec("annual_depreciation_pct", "Annual local-currency depreciation vs USD", 3.0, -10, 40, 0.5, "%", "Scenario assumption, not a historical estimate. Positive means local currency loses USD value."),
         ParamSpec("volatility_pct", "Annual FX volatility", 10.0, 0, 60, 0.5, "%"),
-        ParamSpec("local_revenue_pct", "Revenue denominated in local currency", 100.0, 0, 100, 5, "%"),
-        ParamSpec("local_opex_pct", "O&M denominated in local currency", 80.0, 0, 100, 5, "%"),
-        ParamSpec("hedged_pct", "Local revenue hedged to USD", 0.0, 0, 100, 5, "%"),
+        ParamSpec("local_revenue_pct", "Revenue denominated in local currency", 100.0, 0, 100, 5, "%", "Portion of revenue that is naturally in local currency (not hedged). E.g., 100% for PPA in local currency, 0% for USD-linked PPA."),
+        ParamSpec("local_opex_pct", "O&M denominated in local currency", 20.0, 0, 100, 5, "%", "Portion of O&M from local sources (labor, local materials). Imported equipment, spare parts, and services are typically hard-currency (USD). E.g., 20% for labor-heavy O&M with 80% import content."),
+        ParamSpec("hedged_pct", "Local revenue hedged to USD", 0.0, 0, 100, 5, "%", "Portion of local-currency revenue that is hedged/forward-contracted to USD at known rates, eliminating FX exposure for that portion."),
     )
 
     def _impact(self, ctx, m, p):
@@ -612,8 +695,8 @@ class RiskConfig:
         kwargs: dict[str, Any] = dict(
             strength=self.strength,
             params=self.params,
-            premium_debt_bps=self.premium_debt_bps,
-            premium_equity_bps=self.premium_equity_bps,
+            market_premium_debt_bps=self.premium_debt_bps if self.premium_debt_bps > 0 else None,
+            market_premium_equity_bps=self.premium_equity_bps if self.premium_equity_bps > 0 else None,
             category=self.category or None,
             description=self.description or None,
         )
