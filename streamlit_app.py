@@ -277,7 +277,7 @@ def risk_editor(cfg: RiskConfig, lifetime: int) -> Risk:
             rating = st.session_state["country__rating"]
             risk = cfg.build(params={"rating": rating})
             impact = rating_spreads()[rating]
-            st.caption(f"{st.session_state['country__name'] or 'Project country'}: {rating}. Shared country allowance; no severity scaling.")
+            st.caption(f"{st.session_state['country__name'] or 'Project country'}: {rating}. Country risk premium; no severity scaling.")
             debt_col, equity_col = st.columns(2)
             debt_col.metric("Rating debt premium", f"{impact[0]:.0f} bps")
             equity_col.metric("Rating equity premium", f"{impact[1]:.0f} bps")
@@ -386,7 +386,7 @@ def intervention_panel(risks: list[Risk], lifetime: int) -> list[Intervention]:
             if kind in {"guarantee", "country_guarantee"}:
                 st.caption("Coverage applies to the targeted risk premium only; baseline margin remains. Annual fees run over the debt tenor and are quoted against base capex, not outstanding principal. A lender guarantee is not operating cashflow or CFADS support.")
             if kind == "country_guarantee":
-                st.caption("Select every covered sovereign/political factor: an unprotected overlapping factor can retain the shared country allowance. Equity premiums remain unchanged. Coverage assumes an effective guarantor; guarantor default and recovery delays are not modelled.")
+                st.caption("Select every covered sovereign/political factor: an unprotected overlapping factor can retain the country risk premium. Equity premiums remain unchanged. Coverage assumes an effective guarantor; guarantor default and recovery delays are not modelled.")
     return interventions
 
 
@@ -534,7 +534,7 @@ def coc_waterfall(a: ScenarioAnalysis, which: str) -> go.Figure:
     country = [imp for imp in before.risk_impacts.values() if imp.country_premium]
     country_bps = max((imp.premium_debt_bps if which == "debt" else imp.premium_equity_bps for imp in country), default=0)
     if country_bps:
-        labels.append("Shared country allowance")
+        labels.append("Country risk premium")
         values.append(country_bps / 1e4)
     premium_column = "premium_debt_bps" if which == "debt" else "premium_equity_bps"
     for _, intervention in a.intervention_attribution.iterrows():
